@@ -1,0 +1,1 @@
+This is a DNS server that I wrote many years ago because I couldn't get BIND working and wanted something simpler. Since then it has accumulated features, but with everyone telling me I should just use BIND I never had the confidence to release it. Now I'm knocking the dust off it and preparing it for release.

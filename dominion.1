@@ -1,0 +1,357 @@
+.TH dominion 1 "August 2000"
+.SH NAME
+dominion - A nameserver for the rest of us
+
+.SH SYNOPSIS
+.B dom [-nodemon] [-nocache] [-loglevel] [-c configfile]
+
+.SH DESCRIPTION
+Dominion is a Domain Name Server / proxy DNS written to fulfil some particular requirements, these are:
+
+.IP
+ a) That it should be easy to configure and run. 
+
+ b) That it should be able to behave well as a proxy DNS server in conjuction with a dial-up internet connection. 
+
+ c) That it should be able to interact with dhcp and wins servers, and the good ol "/etc/hosts" file to answer domain lookups. 
+
+ d) That it should supply various means to control and monitor the DNS behaviour of a network. 
+
+ e) That it should be extensible by the use of run-time loadable modules ('plug-ins').
+.LP
+
+Point 'd' roughly translates to 'provide lots of logging and the ability to deny resolution of certain queries to certain clients'.
+
+
+.SH QUICK START
+Before launching into the details of command line arguments and configuration files an overview of some of the basic uses of dominion should be helpful.
+By default dominion uses '/etc/dominion.conf' as its configuration file (another can be specified with the -c command line flag). For many purposes this file is all the configuration that is needed. Some basic configurations follow:
+
+.B Proxy (caching only) nameserver
+
+in order to use dominion as a proxy nameserver a line of the form 
+"nameserver <IP Address>" should be added to the config file for each 
+remote nameserver , e.g.
+
+nameserver 158.56.1.48 
+.br
+nameserver 158.56.1.49 
+.br
+nameserver 148.2.40.2  
+.br
+
+dominion will now forward queries to these nameservers, and will cache the 
+responses, so that subsequent lookups for those queries can be answered from 
+dominions cache without having to forward them to the remote nameservers. 
+Queries will initially be forwarded to the first nameserver in the list, if it 
+cannot resolve them or fails to answer before a timeout period then dominion 
+will move onto the next in the list and so on.
+
+.B Using /etc/hosts
+
+Dominion has a run-time loadable module (see section 'Modules' below) which allows the use of /etc/hosts style files as a source of information for the answering of DNS queries. Such files contain entries of the form:
+
+192.168.1.1   myhost.mydomain.com 
+.br
+192.168.1.2   another.mydomain.com
+.br
+
+
+You don't have to do anything to the dominion configuration file to enable this, but if you want it to read from a hosts style file other than /etc/hosts, you can specify its location by adding a line like:
+
+ HostsFilePath  /usr/local/etc/hosts
+
+to the configuration file. If you want to disable this feature altogether then give it a path here to a non-existant file
+
+.B Using Dhcp and Sambas Wins data files
+
+Again, these are implemented as add-on modules, nothing should be required to get this working if they are in the appropriate place (default /usr/local/lib/dominion). The default paths are /etc/dhcpd.leases and /var/lock/samba/wins.dat. However, these may not be the same on your system, particularly where the samba wins database is concerned. The correct paths to these files can be specified with lines like:
+
+ WinsFilePath /usr/local/share/samba/lib/wins.dat
+ DhcpFilePath /usr/local/lib/dhcpd.leases
+
+Of course these files are produced by the dhcp service and by the samba smb (windows-style) networking service, hence these services must be running on the same machine as dominion to use these files.
+
+.B Specifying domains as local
+
+This is a feature intended for use with a dialup link to the internet. It is intended to prevent name lookups for certain domains. If a client asks for information about a domain that is specified as local, and the query cannot be resolved using information stored on the machine on which dominion is running then it will respond that the query cannot be answered, 
+.B It will not query the remote nameservers to see if they can resolve the query
+this prevents the dial-up link to be brought up if someone asks about a non-existant host on your network, or one that is not currently present (for instance, a laptop that would be resolved using the Dhcpd or Wins files, but which is not currently on the network because it is in use elsewhere, and so the information for it cannot be found in these files).
+
+This feature is enabled by adding a line of the form:
+
+localdomain domain-name subnet
+.br
+
+to your dominion.conf file, e.g.
+
+localdomain foobar.com 192.168.1.0
+.br
+
+Any queries regarding hosts in the domain foobar.com, or on the subnet 192.168.1.0 (which is the subnet for this domain) will not be forwarded to the remote nameservers if they cannot be resolved locally.
+
+.B Using Allow / Deny and Block / Pass
+
+These options allow you to control which clients have access to which domains.
+All these options take an argument of either a host or domain name or 'ALL'. Allow and Deny control which clients may use the DNS service. Block and Pass control which domains clients may query information on. These commands are applied in order, with each subsequent commands overriding the previous ones. Hence
+
+Deny All
+.br
+Allow myhost.foobar.com
+.br
+Allow mydomain.com
+.br
+
+would allow only the host myhost.foobar.com and any host in the domain mydomain.com to use the DNS service. 
+
+Similarly Pass and Block work like this
+
+Block ALL
+.br
+Pass mydomain.com
+.br
+
+would block all queries except those for mydomain.com, so queries for anything outside of this domain would result in a 'no such host or domain' response. Another example
+
+Pass ALL
+.br
+Block gnu.org
+.br
+Block slashdot.org
+.br
+Block www.microsoft.com
+.br
+
+would prevent lookups soley for the domains gnu.org, slashdot.org, and the host www.microsoft.com
+
+
+Things like
+
+Allow myhost.foobar.com
+.br
+Deny ALL
+.br
+
+and
+
+Deny foohost.mydomain.com
+.br
+Allow mydomain.com
+.br
+
+make no sense, as the latter command completely overrides the first, so that the former command has no effect.
+
+
+
+
+For many people these usages alone will probably be adequate. Right, now for the more detailed stuff.
+
+
+
+
+.SH COMMAND LINE OPTIONS
+Most of the configuration of dominion is done using the configuration files, but the following command line options are available.
+
+.TP
+.B -c <path>
+.B -configfile <path>
+
+This option specifies the path to a configuration file other than the compiled in default.
+
+.TP
+.B -i <IP-Address>
+.B -interface <IP-Address>
+
+This option specifies the interface to which dominion should bind. This option used in combintation with the -c option to specify a config file would allow the use of two completely different dns servers on two network interfaces, (for example two different network cards serving two different subnets). By default dominion binds to all network interfaces with one server.
+
+.TP
+.B -l <val>
+.B -loglevel <val>
+
+This option specifies the verbosity of the logging, log levels much above 3 will start to get very full of debugging information.
+
+.TP
+.B
+
+.SH MODULES
+.Pp
+Dominion is modular, modules are 'plug-ins', bits of code that can be added to the program at runtime. Eventually it is planned that modules should be able to be added to, and removed from the server without having to restart it, but at current they are only loaded up when the server is startd. These modules go into /usr/local/lib/dominion
+
+Dominion supports two types of module at current; 
+
+.B "Lookup Source Modules"
+These add functionality to the nameserver by allowing it to use different methods to access data that it can use to answer queries. Examples of these modules are the hostsfile, Dhcp and Wins modules that allow dominion to obtain data from the /etc/hosts file, and from datafiles used by the standard unix dhcp server and Sambas Wins data file.
+
+.B "Cache Modules"
+These allow the caching code of dominion to be altered, allowing an adminstrator to choose a caching scheme from a number of options. This allows the administrator to choose, for instance, caches that demand large amounts of memory but offer high speed lookups against others that are slower but less demanding on resources. Or a cache that writes its data back to disk, which will be slower than one that is implemented soley in memory.
+
+
+
+.SH CONFIGURATION FILES
+.Pp
+.SH The /etc/dominion.conf file
+
+This is the main configuration file for dominion, the default path is '/etc/dominion.conf' but an alternative can be specified using the -c command line flag.
+Options for this file are:
+
+.B alias <name1> <name2>
+.br
+Convert queries for name1 to name2 before attempting to resolve them. This is useful when hosts manifest themselves under multiple names. For example, I have to deal with a printer hub on my network that gets and IP-address through Dhcp. The hostname that it identifies itself to the dhcp server is its product serial number, (say PRCAD685) however, when it appears as a windows style shared printer on the network it identifies itself under another name (say print_server2). This means that windows clients wanting to talk to the print hub ask for it under it's windows name (print_server2). This wouldn't be a problem if the print hub also supported WINS, as it's windows name would appear in the wins database, but it doesn't, and hence the information that is requiered appears only in the dhcp leases file under a different name (PRCAD685).
+
+adding a line like:
+
+alias print_server2.foobar.com PRCAD685.foobar.com 
+
+to the dominion.conf file tells dominion that when it sees queries for print_server2.foobar.com it should look in the hosts / wins / dhcpd files for information relating to PRCAD685.foobar.com
+
+.B Allow <name>
+.br
+Provide answers to requests coming from <name> (this is the opposite of the 'deny' option). <name> can be either a full hostname or a domain name or 'ALL'. So:
+
+.TP
+.B Allow ALL
+Dominion will respond to requests from all hosts
+
+.TP
+.B Allow myhost.foobar.com
+Dominion will respond to requests coming from the machine 'myhost.foobar.com'
+
+.TP
+.B Allow foobar.com
+Dominion will respond to requests coming from the domain 'foobar.com'
+.LP
+
+
+.B AllowRemoteNameLookups <bool>
+.br
+As well as being able to give an IP-address for a name a DNS server can also give a name in reply to a query for an IP-address. Some programs use this feature as a security measure. There is a means to lie about your IP-address and hence to make one host appear to be another (this is known as address spoofing). Some programs double check the hostname for a given IP-address by contacting a DNS server. This can be an annoyance on, for instance, an office network where all the machines are trusted and a firewall protects the network from outside intrusions.These 'reverse lookups' of names for addresses can result in a dialup link being brought up to contact remote servers regarding any such requests that cannot be answered localy. A line of the form
+
+AllowRemoteNameLookups N
+
+in the dominion.conf file will block any such requests from being sent to remote servers.
+.B <bool>
+can have the values 'Y' or 'N' or '1' or '0' or even 'Yes' or 'No'
+
+
+.B Block <name>
+.br
+Respond to any requests for the host or domain specified by <name> by saying that that host or domain does not exist. A crude means of blocking access to certain hosts, ad sites etc. For example:
+
+block microsoft.com
+.br
+block ads.doubleclick.net
+.br
+
+will prevent name lookups for the domain microsoft.com, and the host ads.doubleclick.net. 
+This is the opposite of the 'Pass' option.
+
+.B ConnectLogFile <path>
+.br
+This specifies the path to a logfile in which to record each query that required querying remote nameservers in order to answer it. For sites with a dialup link this will be a list of queries that brought up the dialup link (unless it was already up). Personally I also have a script that puts a line in this file when the dialup link comes up so that I can see exactly which query brought it up. As the hostnames of the machines that made the query are also logged this is a simple way to see who is bringing up the link!
+
+
+.B DefaultTTL <val>
+.br
+This sets the TimeToLive for any information that lacks this (e.g. the /etc/hosts file does not contain TTL information, and so any queries answered from this will have a default TTL).  The TimeToLive specifies how long information can be considered valid for before a client must revaidate it by contacting a DNS server and querying again.
+
+.B Deny <name>
+.br
+Do not respond to any requests coming from <name>. <name> can be a host or domain name or 'ALL'. This is the opposite of allow. For example:
+
+Deny myhost.foobar.com
+.br
+will result in queries coming from myhost.foobar.com being ignored, and myhost.foobar.com being unable to use the DNS service.
+
+.B DhcpFile <path>
+.br
+This line specifies the path to the dhcpd.leases file where lease (IP-Addresses given out by the dhcp server) information is stored.
+
+.B DialupTimeOut <val>
+Number of extra seconds to wait for a dialup link to come up. Dominion is able to monitor the status of a dialup link and wait a certain amount of time for it to come up. While it's waiting for the dialup link to come up it will not start to time out the remote nameservers, so they will get their full time to respond in.
+
+.B DomainFile <path>
+.br
+This line specifies the path to a file in dominions native format which allows full configuration of standard DNS data for a domains and hosts. This file can contain information regarding MailExchage, HostInfo, Authoritive Nameservers, hosts with multiple IP-Address and other information used in the DNS system that connot be specified in the /etc/hosts, wins, or dhcp files in any way. The format of this file is given below. 
+
+.B ForceDefaultTTL
+.br
+Force the TimeToLive values of all requests to be the default. This is useful when you want to limit how much caching of DNS requests clients on your network do, perhaps because you are monitoring who is bringing up the link, and don't want them to do this without having to first contact dominion for an address lookup.
+
+.B Include <path>
+.br
+This line specifies the path to a file containing more dominion.conf style configuration commands that should be read in.
+
+.B Interface <IP-Address>
+.br
+Specify the interface that dominion should bind to. e.g.
+
+Interface 192.168.1.1
+
+would mean that dominion would only answer requests coming in on the interface with the IP-Address 192.168.1.1 (which might be, for instance eth0). The Default is 'ALL', which means that dominion will accept requests from any source. This could be a useful security measure on a machine with one interface (say an ethernet card, eth0) that services the network, and another (say an isdn link) that connects it to the internet. Specifying eth0 as the interface to bind to will prevent dominion from handling queries coming from the internet, and hence prevent it from suffering Denial of Service and other attacks from an outside source. 
+This option can also be used to run separate instances of dominion on different interfaces, by supplying each with its own configuration file and using the -c command line switch to specify to each process which file to use.
+
+.B HostsFile <path>
+.br
+This line specifes the path to a /etc/hosts style file where hostname to IP-Address mappings can be found. The default is, of course /etc/hosts.
+
+.B HideNameservers <bool>
+.br
+Often lookups for addresses or hostnames will bring with them nameserver records that tell clients where they can get authoritive records for the domain in question. Some clients may then query these servers directly. If dominion is being used as a proxy dns server this may not be desirable. Settings HideNameservers to 'Y' will prevent these messages from being passed onto clients, making sure that they forward all queries to dominion.
+
+
+.B LocalDomain <domain-name> <subnet>
+.br
+Specifies a domain that we should consider local, i.e. if we get queries relating to this domain then we shouldn't forward these to remote nameservers, as the local information is authorititive for this domain. Hence, if the query can't be answered locally the remote servers aren't going to know anything about it, so send a 'no such host or domain' response. e.g.
+
+LocalDomain foobar.com 192.168.0.0
+
+.B LogDir <path>
+.br
+Specifies a path to a directory in which to keep various logs. The default is /var/log/dominion.
+
+.B LogLevel <val>
+
+
+.B MachineLogs <bool>
+.br
+Specifies whether to keep a log of requests from each client in a file named after that client in the log directory. The default log directory is '/var/log/dominion'. If you enable this option you will see files in the log directory of the form:
+
+hostname.log
+
+which will contain a log of all lookups from that host. Hosts for which dominion does not know a name will appear under IP address rather than hostname. By Default this option is enabled.
+
+.B Nameserver <IP-Address>
+.br
+This specifies the IP-Address of a remote nameserver that dominion should contact to resolve queries that it cannot answer itself from the local files.
+
+
+.B NoLinkScript <path>
+.br
+This specifies a path to a script to be run if the dialup link fails to come up before the DialupTimeout expires. This script could do almost anything, page or e-mail your network administrator springs to mind.
+
+.B NoServersScript <path>
+.br
+This is like the above NoLinkScript, but the script is run if the dialup link appears to be up but none of the configured nameservers can be contacted.
+
+.B Pass <name>
+.br
+This is the opposite of Block, it allows clients to lookup information for this particular host/domain name.
+
+
+.B RemoteDomain <name> <subnet>
+.br
+This identifies a domain that we should consider remote,
+.B Even if it is a subdomain of a local domain.
+The name can actually be a hostname instead of a domain name, in which case the subnet becomes the IP-Address of the host. The most likely use of this is a situation where you have a local domain called, say, 'foobar.com', but your website 'www.foobar.com' is hosted on your ISP's machine as a virtual domain or suchlike, and hence www.foobar.com is not physically on your network and you have to contact a remote nameserver to get information for it.
+
+
+.B WinsFile <path>
+.br
+Specifies the path to the wins.dat database file used by Samba when it is acting as a WINS server. A WINS server is like DNS for windows smb networks, clients connect to the WINS server on startup and inform it of their Name and IP-Address so that it can then answer DNS style queries from other clients about that machine. Dominion can read this file, and hence can answer DNS queries using the WINS data. This is useful because certain windows programs like web browsers, telnet clients, ftp clients etc seem to use DNS in preference to WINS, which only seems to get used for windows file and print services. Without dominion importing the WINS data these programs would cause dominion to contact remote nameservers, possibly bringing up a dialup link in the process. Also this is useful to answer queries from non WINS capable clients who can nevertheless use DNS. The default path is /var/lock/samba/wins.dat
+
+.B UseCache <bool>
+.br
+This specifies whether dominion should cache responses from remote nameservers and those found in its own native domain configuration files. Responses from the HostFile, WinsFile and DhcpFile are not cached, as these files should be relatively short and hence little bother to read through. Responses from remote servers are cached to prevent having to recontact them when a query is repeated in the lifetime of the information obtained from the first instance of that query. Reponses gleaned from the domain file or files are cached because these files can grow to be quite large and complex, and re-reading them for each query could result in a severe performance hit (caching of the domain files can be further controled by commands in those files).
+
+
+
